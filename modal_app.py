@@ -63,7 +63,7 @@ model_volume = modal.Volume.from_name("lingbot-world-models", create_if_missing=
 MODEL_DIR = "/models"
 
 # GPU configuration - A100 40GB is recommended for LingBot-World
-GPU_CONFIG = modal.gpu.A100(count=1, size="40GB")
+# Using string "A100-40GB" in class decorator
 
 # Download model weights once and cache them
 @app.function(
@@ -96,43 +96,76 @@ def download_model_weights():
 # Main inference class
 @app.cls(
     image=image,
-    gpu=GPU_CONFIG,
+    gpu="A100-40GB",
     volumes={MODEL_DIR: model_volume},
     timeout=600,  # 10 minutes per generation
-    container_idle_timeout=300,  # Keep warm for 5 minutes
-    allow_concurrent_inputs=4,  # Handle multiple requests
+    scaledown_window=300,  # Keep warm for 5 minutes
 )
 class LingBotWorldModel:
     """LingBot-World model inference on Modal."""
     
-    def __enter__(self):
+    @modal.enter()
+    def load_model(self):
         """Load model when container starts."""
         import sys
         import torch
         sys.path.insert(0, "/root/lingbot-world")
         
-        from wan import WanI2V
-        from wan.configs import WAN_CONFIGS
-        
-        print("Loading LingBot-World model...")
+        print("=" * 50)
+        print("Initializing LingBot-World model...")
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
         
         model_path = Path(MODEL_DIR) / "lingbot-world-base-cam"
-        self.config = WAN_CONFIGS['i2v-A14B']
+        print(f"Model path: {model_path}")
+        print(f"Model path exists: {model_path.exists()}")
         
-        self.wan_i2v = WanI2V(
-            config=self.config,
-            checkpoint_dir=str(model_path),
-            device_id=0,
-            rank=0,
-            t5_fsdp=False,
-            dit_fsdp=False,
-            use_sp=False,
-            t5_cpu=False,  # Keep on GPU since we have 40GB
-            init_on_cpu=False,
-            convert_model_dtype=False,
-        )
+        if model_path.exists():
+            files = list(model_path.glob("*"))
+            print(f"Files in model dir: {len(files)}")
+            for f in files[:10]:
+                print(f"  - {f.name}")
         
-        print("✓ Model loaded successfully")
+        # Check if model weights exist
+        if not model_path.exists() or not any(model_path.glob("*.safetensors")):
+            print("⚠️ Model weights not found! Running in demo mode.")
+            print("Run: python3 -m modal run modal_app.py::download_weights")
+            self.wan_i2v = None
+            self.demo_mode = True
+            return
+        
+        try:
+            from wan import WanI2V
+            from wan.configs import WAN_CONFIGS
+            
+            print("Loading WanI2V model...")
+            self.config = WAN_CONFIGS['i2v-A14B']
+            
+            self.wan_i2v = WanI2V(
+                config=self.config,
+                checkpoint_dir=str(model_path),
+                device_id=0,
+                rank=0,
+                t5_fsdp=False,
+                dit_fsdp=False,
+                use_sp=False,
+                t5_cpu=False,  # Keep on GPU since we have 40GB
+                init_on_cpu=False,
+                convert_model_dtype=False,
+            )
+            self.demo_mode = False
+            print("✓ Model loaded successfully!")
+            
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+            import traceback
+            traceback.print_exc()
+            self.wan_i2v = None
+            self.demo_mode = True
+        
+        print("=" * 50)
     
     @modal.method()
     def generate(
@@ -156,9 +189,13 @@ class LingBotWorldModel:
         import numpy as np
         import torch
         from PIL import Image
-        from wan.configs import MAX_AREA_CONFIGS
         
         print(f"Generating: '{prompt[:50]}...' | {num_frames} frames @ {resolution}")
+        
+        # Check if in demo mode
+        if getattr(self, 'demo_mode', True) or self.wan_i2v is None:
+            print("Running in DEMO MODE - generating placeholder frames")
+            return self._generate_demo_frames(prompt, resolution, num_frames)
         
         # Process initial image
         if initial_image_base64:
@@ -186,6 +223,7 @@ class LingBotWorldModel:
             action_path = temp_dir
         
         # Get max_area and shift for resolution
+        from wan.configs import MAX_AREA_CONFIGS
         height, width = resolution
         size_key = f"{height}*{width}"
         max_area = MAX_AREA_CONFIGS.get(size_key, height * width)
@@ -227,6 +265,65 @@ class LingBotWorldModel:
             "frames": frames_base64,
             "num_frames": len(frames_base64),
             "resolution": resolution,
+        }
+    
+    def _generate_demo_frames(
+        self,
+        prompt: str,
+        resolution: tuple[int, int],
+        num_frames: int
+    ) -> dict:
+        """Generate demo placeholder frames when model isn't available."""
+        import numpy as np
+        from PIL import Image
+        import hashlib
+        
+        height, width = resolution
+        frames_base64 = []
+        
+        # Use prompt hash for consistent colors
+        prompt_hash = int(hashlib.md5(prompt.encode()).hexdigest()[:8], 16)
+        np.random.seed(prompt_hash % (2**31))
+        base_color = [np.random.randint(40, 180) for _ in range(3)]
+        
+        print(f"Generating {num_frames} demo frames...")
+        
+        for i in range(min(num_frames, 60)):  # Cap at 60 for demo
+            # Create animated gradient
+            img_array = np.zeros((height, width, 3), dtype=np.uint8)
+            t = i / max(num_frames, 1)
+            
+            for c in range(3):
+                base = base_color[c] + int(40 * np.sin(t * 2 * np.pi + c * 2.1))
+                img_array[:, :, c] = np.clip(base, 0, 255)
+            
+            # Add gradient
+            for y in range(height):
+                gradient = int(40 * y / height)
+                img_array[y, :, :] = np.clip(
+                    img_array[y, :, :].astype(np.int16) + gradient, 0, 255
+                ).astype(np.uint8)
+            
+            # Add some noise
+            noise = np.random.randint(-10, 10, (height, width, 3), dtype=np.int16)
+            img_array = np.clip(
+                img_array.astype(np.int16) + noise, 0, 255
+            ).astype(np.uint8)
+            
+            # Encode to base64
+            frame = Image.fromarray(img_array)
+            buffer = io.BytesIO()
+            frame.save(buffer, format="JPEG", quality=85)
+            frame_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            frames_base64.append(frame_b64)
+        
+        print(f"✓ Generated {len(frames_base64)} demo frames")
+        
+        return {
+            "frames": frames_base64,
+            "num_frames": len(frames_base64),
+            "resolution": resolution,
+            "demo_mode": True,
         }
 
 
