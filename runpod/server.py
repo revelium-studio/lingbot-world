@@ -135,8 +135,16 @@ def generate_world(prompt: str, num_frames: int = 81, resolution: tuple = (480, 
     """Generate world frames using LingBot-World model."""
     import numpy as np
     from PIL import Image
+    import time
     
-    print(f"\n🎬 Generating: '{prompt[:50]}...' | {num_frames} frames @ {resolution}")
+    print(f"\n{'='*60}")
+    print(f"🎬 GENERATING WORLD")
+    print(f"{'='*60}")
+    print(f"   Prompt: '{prompt[:60]}...'")
+    print(f"   Frames: {num_frames}")
+    print(f"   Resolution: {resolution}")
+    print(f"   Model loaded: {model_loaded}")
+    print(f"   wan_i2v: {wan_i2v is not None}")
     
     if not model_loaded or wan_i2v is None:
         print("⚠️ Model not loaded, generating placeholder frames")
@@ -145,6 +153,7 @@ def generate_world(prompt: str, num_frames: int = 81, resolution: tuple = (480, 
     try:
         # Create placeholder image
         height, width = resolution
+        print(f"\n📷 Creating seed image ({height}x{width})...")
         img_array = np.zeros((height, width, 3), dtype=np.uint8)
         for y in range(height):
             for x in range(width):
@@ -152,14 +161,21 @@ def generate_world(prompt: str, num_frames: int = 81, resolution: tuple = (480, 
                 img_array[y, x, 1] = int(60 + 60 * y / height)
                 img_array[y, x, 2] = int(120 + 80 * (1 - x / width))
         img = Image.fromarray(img_array)
+        print(f"   ✓ Image created: {img.size}")
         
         # Get max_area and shift for resolution
+        print(f"\n⚙️ Loading config...")
         from wan.configs import MAX_AREA_CONFIGS
         size_key = f"{height}*{width}"
         max_area = MAX_AREA_CONFIGS.get(size_key, height * width)
         shift = 3.0 if height <= 480 else 5.0
+        print(f"   max_area: {max_area}")
+        print(f"   shift: {shift}")
         
         # Generate video
+        print(f"\n🚀 Starting generation (this takes 2-4 minutes)...")
+        start_time = time.time()
+        
         video = wan_i2v.generate(
             input_prompt=prompt,
             img=img,
@@ -174,7 +190,12 @@ def generate_world(prompt: str, num_frames: int = 81, resolution: tuple = (480, 
             offload_model=False,  # Keep in memory for speed
         )
         
+        elapsed = time.time() - start_time
+        print(f"\n✓ Generation complete in {elapsed:.1f}s")
+        print(f"   Video shape: {video.shape}")
+        
         # Convert to base64 frames
+        print(f"\n📦 Converting to frames...")
         video_cpu = video.cpu()
         video_normalized = (video_cpu + 1) / 2 * 255
         video_normalized = video_normalized.clamp(0, 255).byte()
@@ -188,7 +209,9 @@ def generate_world(prompt: str, num_frames: int = 81, resolution: tuple = (480, 
             frame_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
             frames_base64.append(frame_b64)
         
-        print(f"✅ Generated {len(frames_base64)} real frames!")
+        print(f"\n{'='*60}")
+        print(f"✅ GENERATED {len(frames_base64)} REAL FRAMES!")
+        print(f"{'='*60}")
         
         return {
             "frames": frames_base64,
@@ -197,9 +220,13 @@ def generate_world(prompt: str, num_frames: int = 81, resolution: tuple = (480, 
         }
         
     except Exception as e:
-        print(f"❌ Error generating: {e}")
+        print(f"\n{'='*60}")
+        print(f"❌ GENERATION ERROR")
+        print(f"{'='*60}")
+        print(f"   Error: {e}")
         import traceback
         traceback.print_exc()
+        print(f"\n   Falling back to demo frames...")
         return generate_demo_frames(prompt, resolution, num_frames)
 
 
