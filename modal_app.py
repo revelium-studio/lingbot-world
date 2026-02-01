@@ -238,9 +238,12 @@ class LingBotWorldModel:
 @modal.asgi_app()
 def fastapi_app():
     """FastAPI app for HTTP/WebSocket endpoints."""
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    import uuid
+    import asyncio
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
     from fastapi.middleware.cors import CORSMiddleware
-    from pydantic import BaseModel
+    from fastapi.responses import StreamingResponse
+    from pydantic import BaseModel, Field
     
     web_app = FastAPI(title="LingBot-World API")
     
@@ -253,22 +256,56 @@ def fastapi_app():
         allow_headers=["*"],
     )
     
-    # Pydantic models
-    class GenerateRequest(BaseModel):
-        prompt: str
+    # In-memory session storage
+    sessions = {}
+    
+    # Pydantic models matching frontend expectations
+    class CreateWorldRequest(BaseModel):
+        prompt: str = Field(..., min_length=1, max_length=2000)
         initial_image_base64: Optional[str] = None
-        resolution: tuple[int, int] = (480, 832)
-        num_frames: int = 161
-        sampling_steps: int = 40
-        guide_scale: float = 5.0
-        seed: int = -1
+    
+    class CreateWorldResponse(BaseModel):
+        session_id: str
+        status: str
+        message: str
     
     class ControlRequest(BaseModel):
         action: str
         mouse_dx: float = 0.0
         mouse_dy: float = 0.0
     
-    # Endpoints
+    class ControlResponse(BaseModel):
+        success: bool
+        frame_index: int
+    
+    # Background task to generate frames
+    async def generate_frames_background(session_id: str, prompt: str):
+        """Generate frames in background and store in session."""
+        try:
+            sessions[session_id]["status"] = "generating"
+            sessions[session_id]["message"] = "Generating frames on GPU..."
+            
+            # Call the Modal GPU function
+            model = LingBotWorldModel()
+            result = model.generate.remote(
+                prompt=prompt,
+                resolution=(480, 832),
+                num_frames=81,  # Shorter for faster initial response
+                sampling_steps=30,  # Faster
+                guide_scale=5.0,
+                seed=-1,
+            )
+            
+            sessions[session_id]["frames"] = result.get("frames", [])
+            sessions[session_id]["status"] = "ready"
+            sessions[session_id]["current_frame"] = 0
+            sessions[session_id]["message"] = "World generated!"
+            
+        except Exception as e:
+            sessions[session_id]["status"] = "error"
+            sessions[session_id]["message"] = str(e)
+    
+    # Endpoints matching frontend expectations
     @web_app.get("/")
     async def root():
         return {
@@ -281,41 +318,172 @@ def fastapi_app():
     async def health():
         return {"status": "healthy"}
     
-    @web_app.post("/api/generate")
-    async def generate(request: GenerateRequest):
-        """Generate world video from prompt."""
-        model = LingBotWorldModel()
-        result = model.generate.remote(
-            prompt=request.prompt,
-            initial_image_base64=request.initial_image_base64,
-            resolution=request.resolution,
-            num_frames=request.num_frames,
-            sampling_steps=request.sampling_steps,
-            guide_scale=request.guide_scale,
-            seed=request.seed,
+    @web_app.get("/api/status")
+    async def get_status():
+        return {
+            "model_loaded": True,
+            "active_sessions": len(sessions),
+            "max_sessions": 10,
+            "device": "A100-40GB"
+        }
+    
+    @web_app.post("/api/world/create", response_model=CreateWorldResponse)
+    async def create_world(request: CreateWorldRequest, background_tasks: BackgroundTasks):
+        """Create a new world generation session."""
+        session_id = str(uuid.uuid4())
+        
+        # Initialize session
+        sessions[session_id] = {
+            "prompt": request.prompt,
+            "status": "initializing",
+            "message": "Starting generation...",
+            "frames": [],
+            "current_frame": 0,
+        }
+        
+        # Start generation in background
+        background_tasks.add_task(generate_frames_background, session_id, request.prompt)
+        
+        return CreateWorldResponse(
+            session_id=session_id,
+            status="generating",
+            message="World generation started"
         )
-        return result
+    
+    @web_app.get("/api/world/{session_id}/status")
+    async def get_session_status(session_id: str):
+        """Get status of a world session."""
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session = sessions[session_id]
+        return {
+            "session_id": session_id,
+            "prompt": session.get("prompt", ""),
+            "is_generating": session.get("status") == "generating",
+            "current_frame_index": session.get("current_frame", 0),
+            "has_frames": len(session.get("frames", [])) > 0,
+            "status": session.get("status"),
+            "message": session.get("message", ""),
+        }
+    
+    @web_app.get("/api/world/{session_id}/frame")
+    async def get_current_frame(session_id: str):
+        """Get the current frame as an image."""
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session = sessions[session_id]
+        frames = session.get("frames", [])
+        
+        if not frames:
+            raise HTTPException(status_code=404, detail="No frames available yet")
+        
+        # Get current frame (cycle through available frames)
+        frame_index = session.get("current_frame", 0) % len(frames)
+        frame_b64 = frames[frame_index]
+        
+        # Advance frame for next request
+        session["current_frame"] = (frame_index + 1) % len(frames)
+        
+        # Decode and return as JPEG
+        import base64
+        frame_data = base64.b64decode(frame_b64)
+        return StreamingResponse(io.BytesIO(frame_data), media_type="image/jpeg")
+    
+    @web_app.post("/api/world/{session_id}/control", response_model=ControlResponse)
+    async def send_control(session_id: str, request: ControlRequest):
+        """Send a control action to the world."""
+        if session_id not in sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session = sessions[session_id]
+        
+        # For now, just advance frames based on action
+        # In full implementation, this would regenerate with new camera poses
+        frames = session.get("frames", [])
+        if frames:
+            if request.action in ["move_forward", "move_right", "turn_right"]:
+                session["current_frame"] = (session.get("current_frame", 0) + 2) % len(frames)
+            elif request.action in ["move_backward", "move_left", "turn_left"]:
+                session["current_frame"] = (session.get("current_frame", 0) - 2) % len(frames)
+        
+        return ControlResponse(
+            success=True,
+            frame_index=session.get("current_frame", 0)
+        )
+    
+    @web_app.delete("/api/world/{session_id}")
+    async def delete_world(session_id: str):
+        """End a world session."""
+        if session_id in sessions:
+            del sessions[session_id]
+        return {"status": "deleted", "session_id": session_id}
     
     @web_app.websocket("/ws/{session_id}")
     async def websocket_endpoint(websocket: WebSocket, session_id: str):
         """WebSocket for real-time frame streaming."""
         await websocket.accept()
         
+        if session_id not in sessions:
+            await websocket.close(code=4004, reason="Session not found")
+            return
+        
         try:
+            # Send frames periodically
+            frame_interval = 1.0 / 16  # 16 FPS
+            
             while True:
-                data = await websocket.receive_text()
-                message = json.loads(data)
+                session = sessions.get(session_id)
+                if not session:
+                    break
                 
-                if message.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
-                elif message.get("type") == "control":
-                    # Handle control actions
+                frames = session.get("frames", [])
+                status = session.get("status", "unknown")
+                
+                if frames:
+                    frame_index = session.get("current_frame", 0) % len(frames)
+                    await websocket.send_json({
+                        "type": "frame",
+                        "frame_index": frame_index,
+                        "data": frames[frame_index],
+                        "is_generating": status == "generating",
+                    })
+                    session["current_frame"] = (frame_index + 1) % len(frames)
+                else:
                     await websocket.send_json({
                         "type": "status",
-                        "message": "Control received"
+                        "status": status,
+                        "message": session.get("message", ""),
                     })
+                
+                # Check for incoming messages (non-blocking)
+                try:
+                    data = await asyncio.wait_for(
+                        websocket.receive_text(),
+                        timeout=frame_interval
+                    )
+                    message = json.loads(data)
+                    
+                    if message.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                    elif message.get("type") == "control":
+                        # Handle control actions
+                        action = message.get("action")
+                        if action and frames:
+                            if action in ["move_forward", "move_right", "turn_right"]:
+                                session["current_frame"] = (session.get("current_frame", 0) + 2) % len(frames)
+                            elif action in ["move_backward", "move_left", "turn_left"]:
+                                session["current_frame"] = (session.get("current_frame", 0) - 2) % len(frames)
+                except asyncio.TimeoutError:
+                    pass
+                
+                await asyncio.sleep(frame_interval)
+                
         except WebSocketDisconnect:
             pass
+        except Exception as e:
+            print(f"WebSocket error: {e}")
     
     return web_app
 
