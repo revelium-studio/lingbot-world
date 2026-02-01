@@ -3,6 +3,11 @@ import PromptScreen from './components/PromptScreen'
 import LoadingScreen from './components/LoadingScreen'
 import WorldView from './components/WorldView'
 
+// API base URL - use Modal backend in production
+const API_URL = import.meta.env.PROD 
+  ? 'https://revelium-studio--lingbot-world-fastapi-app.modal.run'
+  : ''
+
 // Application states
 const STATES = {
   PROMPT: 'prompt',
@@ -24,7 +29,7 @@ function App() {
     setError(null)
 
     try {
-      const response = await fetch('/api/world/create', {
+      const response = await fetch(`${API_URL}/api/world/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: promptText }),
@@ -54,7 +59,7 @@ function App() {
     // Clean up session
     if (sessionId) {
       try {
-        await fetch(`/api/world/${sessionId}`, { method: 'DELETE' })
+        await fetch(`${API_URL}/api/world/${sessionId}`, { method: 'DELETE' })
       } catch (err) {
         console.error('Failed to delete session:', err)
       }
@@ -87,6 +92,7 @@ function App() {
           sessionId={sessionId}
           prompt={prompt}
           onBack={handleBackToPrompt}
+          apiUrl={API_URL}
         />
       )}
     </div>

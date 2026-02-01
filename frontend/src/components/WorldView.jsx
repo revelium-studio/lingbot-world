@@ -17,13 +17,14 @@ const KEY_ACTIONS = {
   ShiftRight: 'move_down',
 }
 
-function WorldView({ sessionId, prompt, onBack }) {
+function WorldView({ sessionId, prompt, onBack, apiUrl = '' }) {
   const [frameData, setFrameData] = useState(null)
   const [frameIndex, setFrameIndex] = useState(0)
   const [isConnected, setIsConnected] = useState(false)
   const [isGenerating, setIsGenerating] = useState(true)
   const [activeKeys, setActiveKeys] = useState(new Set())
   const [pointerLocked, setPointerLocked] = useState(false)
+  const [statusMessage, setStatusMessage] = useState('Connecting...')
   
   const wsRef = useRef(null)
   const viewportRef = useRef(null)
@@ -35,9 +36,18 @@ function WorldView({ sessionId, prompt, onBack }) {
   useEffect(() => {
     if (!sessionId) return
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}`
+    // Determine WebSocket URL based on apiUrl
+    let wsUrl
+    if (apiUrl) {
+      // Use Modal backend WebSocket
+      wsUrl = apiUrl.replace('https://', 'wss://').replace('http://', 'ws://') + `/ws/${sessionId}`
+    } else {
+      // Local development
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      wsUrl = `${protocol}//${window.location.host}/ws/${sessionId}`
+    }
     
+    console.log('Connecting to WebSocket:', wsUrl)
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
@@ -75,7 +85,7 @@ function WorldView({ sessionId, prompt, onBack }) {
     const pollInterval = setInterval(async () => {
       if (ws.readyState !== WebSocket.OPEN) {
         try {
-          const response = await fetch(`/api/world/${sessionId}/frame`)
+          const response = await fetch(`${apiUrl}/api/world/${sessionId}/frame`)
           if (response.ok) {
             const blob = await response.blob()
             const reader = new FileReader()
