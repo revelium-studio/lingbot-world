@@ -21,13 +21,32 @@ import modal
 app = modal.App("lingbot-world")
 
 # Define the container image with all dependencies
+# Use CUDA base image for flash-attn
 image = (
-    modal.Image.debian_slim(python_version="3.10")
+    modal.Image.from_registry(
+        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+        add_python="3.11"
+    )
     .apt_install("git", "ffmpeg", "libsm6", "libxext6")
     .pip_install(
-        "torch>=2.4.0",
-        "torchvision>=0.19.0",
-        "torchaudio",
+        # Install build dependencies first
+        "packaging",
+        "wheel", 
+        "setuptools",
+        "ninja",
+    )
+    .pip_install(
+        # Install PyTorch
+        "torch==2.5.1",
+        "torchvision==0.20.1",
+        "torchaudio==2.5.1",
+    )
+    .run_commands(
+        # Install flash-attn from source (requires CUDA compiler)
+        "pip install flash-attn --no-build-isolation",
+    )
+    .pip_install(
+        # Install remaining dependencies
         "diffusers>=0.31.0",
         "transformers>=4.49.0,<=4.51.3",
         "tokenizers>=0.20.3",
@@ -51,8 +70,6 @@ image = (
     .run_commands(
         # Clone LingBot-World repository
         "cd /root && git clone https://github.com/Robbyant/lingbot-world.git",
-        # Remove flash_attn from dependencies (optional, requires CUDA compiler)
-        "cd /root/lingbot-world && sed -i '/flash_attn/d' pyproject.toml",
         # Install as package
         "cd /root/lingbot-world && pip install -e .",
     )
@@ -162,15 +179,22 @@ def download_model_weights(force: bool = False):
 
 
 # Main inference class
+# Note: A100-80GB is required due to model size (~70GB for both noise models)
 @app.cls(
     image=image,
-    gpu="A100-40GB",
+    gpu="A100-80GB",
     volumes={MODEL_DIR: model_volume},
-    timeout=600,  # 10 minutes per generation
+    timeout=900,  # 15 minutes per generation
     scaledown_window=300,  # Keep warm for 5 minutes
 )
 class LingBotWorldModel:
     """LingBot-World model inference on Modal."""
+    
+    # Class-level defaults (set by @modal.enter)
+    wan_i2v: any = None
+    config: any = None
+    demo_mode: bool = True
+    _model_loaded: bool = False
     
     @modal.enter()
     def load_model(self):
@@ -179,17 +203,22 @@ class LingBotWorldModel:
         import torch
         sys.path.insert(0, "/root/lingbot-world")
         
+        print("\n" + "=" * 60)
+        print("🚀 INITIALIZING LINGBOT-WORLD MODEL")
         print("=" * 60)
-        print("Initializing LingBot-World model...")
-        print("=" * 60)
-        print(f"CUDA available: {torch.cuda.is_available()}")
+        
+        # Reload volume to ensure we see latest files
+        print("\n📁 Reloading volume...")
+        model_volume.reload()
+        
+        print(f"\n🖥️  CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
-            print(f"GPU: {torch.cuda.get_device_name(0)}")
-            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            print(f"   GPU: {torch.cuda.get_device_name(0)}")
+            print(f"   GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
         
         model_path = Path(MODEL_DIR) / "lingbot-world-base-cam"
-        print(f"\nModel path: {model_path}")
-        print(f"Model path exists: {model_path.exists()}")
+        print(f"\n📂 Model path: {model_path}")
+        print(f"   Exists: {model_path.exists()}")
         
         if model_path.exists():
             # List top-level contents
@@ -246,8 +275,9 @@ class LingBotWorldModel:
                 convert_model_dtype=False,
             )
             self.demo_mode = False
+            self._model_loaded = True
             print("\n" + "=" * 60)
-            print("✓ MODEL LOADED SUCCESSFULLY!")
+            print("✅ MODEL LOADED SUCCESSFULLY!")
             print("=" * 60)
             
         except Exception as e:
@@ -282,11 +312,13 @@ class LingBotWorldModel:
         import torch
         from PIL import Image
         
-        print(f"Generating: '{prompt[:50]}...' | {num_frames} frames @ {resolution}")
+        print(f"\n🎬 Generating: '{prompt[:50]}...' | {num_frames} frames @ {resolution}")
+        print(f"   Model loaded: {self._model_loaded}, demo_mode: {self.demo_mode}, wan_i2v: {self.wan_i2v is not None}")
         
         # Check if in demo mode
-        if getattr(self, 'demo_mode', True) or self.wan_i2v is None:
-            print("Running in DEMO MODE - generating placeholder frames")
+        if self.demo_mode or self.wan_i2v is None:
+            print("⚠️ Running in DEMO MODE - generating placeholder frames")
+            print("   (Model may have failed to load - check logs above)")
             return self._generate_demo_frames(prompt, resolution, num_frames)
         
         # Process initial image
@@ -754,16 +786,22 @@ def check_volume_status():
 
 # CLI command to download weights
 @app.local_entrypoint()
-def download_weights(force: bool = False, check_only: bool = False):
+def download_weights(force: bool = False, check_only: bool = False, test_generate: bool = False):
     """Download model weights to Modal volume.
     
     Args:
         force: Force re-download even if files exist
         check_only: Only check volume status, don't download
+        test_generate: Test the model generation
     """
     if check_only:
         print("Checking volume status...")
         check_volume_status.remote()
+    elif test_generate:
+        print("Testing model generation...")
+        model = LingBotWorldModel()
+        result = model.generate.remote(prompt="a simple forest", num_frames=5)
+        print(f"\n✓ Result: {result.get('num_frames', 0)} frames, demo_mode: {result.get('demo_mode', 'unknown')}")
     else:
         print("Starting model download...")
         result = download_model_weights.remote(force=force)
