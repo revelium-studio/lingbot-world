@@ -185,7 +185,8 @@ def download_model_weights(force: bool = False):
     gpu="A100-80GB",
     volumes={MODEL_DIR: model_volume},
     timeout=900,  # 15 minutes per generation
-    scaledown_window=300,  # Keep warm for 5 minutes
+    min_containers=1,  # Keep one GPU container warm to avoid cold starts
+    scaledown_window=600,  # Keep warm for 10 minutes
 )
 class LingBotWorldModel:
     """LingBot-World model inference on Modal."""
@@ -451,11 +452,9 @@ class LingBotWorldModel:
         }
 
 
-# FastAPI web endpoint
+# FastAPI web endpoint  
 @app.function(
     image=image,
-    min_containers=1,  # Keep one instance warm to avoid cold starts
-    scaledown_window=600,  # Keep container alive for 10 minutes
 )
 @modal.asgi_app()
 def fastapi_app():
