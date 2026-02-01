@@ -60,3 +60,4 @@ temp/
 
 # Jupyter
 .ipynb_checkpoints/
+.vercel
