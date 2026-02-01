@@ -1,0 +1,18 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "env": {
+    "VITE_API_URL": "https://revelium-studio--lingbot-world-fastapi-app.modal.run"
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://revelium-studio--lingbot-world-fastapi-app.modal.run/api/$1"
+    },
+    {
+      "source": "/ws/:path*",
+      "destination": "https://revelium-studio--lingbot-world-fastapi-app.modal.run/ws/:path*"
+    }
+  ]
+}
