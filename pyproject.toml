@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lingbot-world-app"
+version = "0.1.0"
+description = "Interactive application for LingBot-World open-source world model"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = {text = "Apache-2.0"}
+
+# Core dependencies for the interactive app
+# Note: LingBot-World model dependencies are installed from lingbot-world-repo
+dependencies = [
+    # Backend framework
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "python-multipart>=0.0.6",
+    "websockets>=12.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    
+    # ML/Model dependencies (from LingBot-World requirements.txt)
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
+    "torchaudio",
+    "diffusers>=0.31.0",
+    "transformers>=4.49.0,<=4.51.3",
+    "tokenizers>=0.20.3",
+    "accelerate>=1.1.1",
+    
+    # Vision & Video
+    "opencv-python>=4.9.0.80",
+    "imageio[ffmpeg]",
+    "imageio-ffmpeg",
+    "Pillow>=10.0.0",
+    
+    # Utilities
+    "tqdm",
+    "easydict",
+    "ftfy",
+    "einops>=0.7.0",
+    "numpy>=1.23.5,<2",
+    "scipy",
+    "safetensors>=0.4.0",
+    
+    # HuggingFace Hub
+    "huggingface-hub>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "huggingface-hub[cli]",
+]
+
+[project.urls]
+homepage = "https://github.com/Robbyant/lingbot-world"
+documentation = "https://github.com/Robbyant/lingbot-world"
+huggingface = "https://huggingface.co/robbyant/lingbot-world-base-cam"
+
+[project.scripts]
+lingbot-app = "backend.main:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]  # Line too long (handled by black)
