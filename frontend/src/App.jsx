@@ -27,11 +27,18 @@ function App() {
     setError(null)
 
     try {
+      // Create AbortController with 5 minute timeout
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 300000) // 5 minutes
+
       const response = await fetch(`${API_URL}/api/world/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: promptText }),
+        signal: controller.signal,
       })
+
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))
@@ -48,7 +55,11 @@ function App() {
       setAppState(STATES.WORLD)
     } catch (err) {
       console.error('Generation error:', err)
-      setError(err.message)
+      if (err.name === 'AbortError') {
+        setError('Generation timeout (5 minutes). Please try with fewer frames.')
+      } else {
+        setError(err.message)
+      }
       setAppState(STATES.PROMPT)
     }
   }, [])

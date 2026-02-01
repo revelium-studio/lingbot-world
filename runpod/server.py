@@ -469,4 +469,12 @@ async def startup_event():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        timeout_keep_alive=300,  # 5 minutes
+        timeout_graceful_shutdown=10,
+        limit_concurrency=10,
+        limit_max_requests=1000
+    )
