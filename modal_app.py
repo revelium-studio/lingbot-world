@@ -69,27 +69,95 @@ MODEL_DIR = "/models"
 @app.function(
     image=image,
     volumes={MODEL_DIR: model_volume},
-    timeout=3600,  # 1 hour for downloading
+    timeout=7200,  # 2 hours for downloading large files
 )
-def download_model_weights():
+def download_model_weights(force: bool = False):
     """Download LingBot-World model weights from HuggingFace."""
-    from huggingface_hub import snapshot_download
+    import subprocess
+    import shutil
     
     model_path = Path(MODEL_DIR) / "lingbot-world-base-cam"
     
-    if model_path.exists() and any(model_path.glob("*.safetensors")):
-        print(f"✓ Model already cached at {model_path}")
-        return str(model_path)
+    print("=" * 60)
+    print("LingBot-World Model Downloader")
+    print("=" * 60)
     
-    print("Downloading model weights from HuggingFace...")
+    # List existing files in volume
+    print(f"\nChecking volume at {MODEL_DIR}...")
+    if Path(MODEL_DIR).exists():
+        all_files = list(Path(MODEL_DIR).rglob("*"))
+        print(f"Total items in volume: {len(all_files)}")
+        
+        # Check for safetensors files specifically
+        safetensor_files = list(Path(MODEL_DIR).rglob("*.safetensors"))
+        print(f"Safetensor files found: {len(safetensor_files)}")
+        for f in safetensor_files[:5]:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            print(f"  - {f.name}: {size_mb:.1f} MB")
+        
+        # Calculate total size
+        total_size = sum(f.stat().st_size for f in all_files if f.is_file())
+        print(f"Total size: {total_size / (1024**3):.2f} GB")
+    else:
+        print("Volume is empty")
+    
+    # Check if model is already properly downloaded (should be ~50GB+)
+    if model_path.exists() and not force:
+        safetensors = list(model_path.glob("*.safetensors"))
+        if safetensors:
+            total_size = sum(f.stat().st_size for f in safetensors)
+            if total_size > 10 * 1024**3:  # More than 10GB
+                print(f"\n✓ Model already cached at {model_path}")
+                print(f"  Total safetensor size: {total_size / (1024**3):.1f} GB")
+                return str(model_path)
+            else:
+                print(f"\n⚠️ Model files incomplete ({total_size / (1024**3):.2f} GB)")
+                print("  Re-downloading...")
+                shutil.rmtree(model_path, ignore_errors=True)
+    
+    # Use huggingface-cli for robust downloading with progress
+    print("\n" + "=" * 60)
+    print("Downloading model from HuggingFace...")
+    print("This may take 30-60 minutes for the full ~50GB model")
+    print("=" * 60 + "\n")
+    
+    # Create directory
+    model_path.mkdir(parents=True, exist_ok=True)
+    
+    # Download using huggingface_hub with resume support
+    from huggingface_hub import snapshot_download
+    
     snapshot_download(
         repo_id="robbyant/lingbot-world-base-cam",
         local_dir=str(model_path),
-        local_dir_use_symlinks=False,
+        resume_download=True,
+        max_workers=4,
     )
     
+    # Verify download
+    print("\n" + "=" * 60)
+    print("Verifying download...")
+    safetensors = list(model_path.glob("*.safetensors"))
+    total_size = sum(f.stat().st_size for f in safetensors) if safetensors else 0
+    
+    print(f"Safetensor files: {len(safetensors)}")
+    print(f"Total size: {total_size / (1024**3):.2f} GB")
+    
+    for f in sorted(safetensors, key=lambda x: x.stat().st_size, reverse=True)[:10]:
+        size_mb = f.stat().st_size / (1024 * 1024)
+        print(f"  - {f.name}: {size_mb:.1f} MB")
+    
+    if total_size < 10 * 1024**3:
+        print("\n❌ WARNING: Download may be incomplete!")
+        print("   Expected ~50GB, got {:.2f} GB".format(total_size / (1024**3)))
+    else:
+        print("\n✓ Download complete!")
+    
+    # Commit changes to volume
     model_volume.commit()
-    print(f"✓ Model downloaded to {model_path}")
+    print("✓ Volume committed")
+    print("=" * 60)
+    
     return str(model_path)
 
 
@@ -111,37 +179,59 @@ class LingBotWorldModel:
         import torch
         sys.path.insert(0, "/root/lingbot-world")
         
-        print("=" * 50)
+        print("=" * 60)
         print("Initializing LingBot-World model...")
+        print("=" * 60)
         print(f"CUDA available: {torch.cuda.is_available()}")
         if torch.cuda.is_available():
             print(f"GPU: {torch.cuda.get_device_name(0)}")
             print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
         
         model_path = Path(MODEL_DIR) / "lingbot-world-base-cam"
-        print(f"Model path: {model_path}")
+        print(f"\nModel path: {model_path}")
         print(f"Model path exists: {model_path.exists()}")
         
         if model_path.exists():
-            files = list(model_path.glob("*"))
-            print(f"Files in model dir: {len(files)}")
-            for f in files[:10]:
-                print(f"  - {f.name}")
+            # List top-level contents
+            top_files = list(model_path.glob("*"))
+            print(f"\nTop-level items: {len(top_files)}")
+            for f in top_files:
+                if f.is_dir():
+                    subfiles = list(f.glob("*"))
+                    print(f"  📁 {f.name}/ ({len(subfiles)} files)")
+                else:
+                    size_mb = f.stat().st_size / (1024 * 1024)
+                    print(f"  📄 {f.name} ({size_mb:.1f} MB)")
+            
+            # Check for safetensors recursively
+            safetensors = list(model_path.rglob("*.safetensors"))
+            print(f"\nTotal safetensor files (recursive): {len(safetensors)}")
+            if safetensors:
+                total_size = sum(f.stat().st_size for f in safetensors)
+                print(f"Total safetensor size: {total_size / (1024**3):.1f} GB")
         
-        # Check if model weights exist
-        if not model_path.exists() or not any(model_path.glob("*.safetensors")):
-            print("⚠️ Model weights not found! Running in demo mode.")
+        # Check if model weights exist - use rglob for recursive search
+        safetensor_files = list(model_path.rglob("*.safetensors")) if model_path.exists() else []
+        t5_file = model_path / "models_t5_umt5-xxl-enc-bf16.pth"
+        
+        if not safetensor_files or not t5_file.exists():
+            print("\n⚠️ Model weights not found! Running in demo mode.")
+            print("Missing safetensors:", len(safetensor_files) == 0)
+            print("Missing T5 file:", not t5_file.exists())
             print("Run: python3 -m modal run modal_app.py::download_weights")
             self.wan_i2v = None
             self.demo_mode = True
             return
         
+        print("\n✓ Model files verified!")
+        print("Loading WanI2V model (this may take 1-2 minutes)...")
+        
         try:
             from wan import WanI2V
             from wan.configs import WAN_CONFIGS
             
-            print("Loading WanI2V model...")
             self.config = WAN_CONFIGS['i2v-A14B']
+            print(f"Config: i2v-A14B")
             
             self.wan_i2v = WanI2V(
                 config=self.config,
@@ -151,21 +241,23 @@ class LingBotWorldModel:
                 t5_fsdp=False,
                 dit_fsdp=False,
                 use_sp=False,
-                t5_cpu=False,  # Keep on GPU since we have 40GB
+                t5_cpu=True,  # Move T5 to CPU to save GPU memory
                 init_on_cpu=False,
                 convert_model_dtype=False,
             )
             self.demo_mode = False
-            print("✓ Model loaded successfully!")
+            print("\n" + "=" * 60)
+            print("✓ MODEL LOADED SUCCESSFULLY!")
+            print("=" * 60)
             
         except Exception as e:
-            print(f"❌ Error loading model: {e}")
+            print(f"\n❌ Error loading model: {e}")
             import traceback
             traceback.print_exc()
             self.wan_i2v = None
             self.demo_mode = True
         
-        print("=" * 50)
+        print("=" * 60)
     
     @modal.method()
     def generate(
@@ -585,9 +677,70 @@ def fastapi_app():
     return web_app
 
 
+# Function to check volume status
+@app.function(
+    image=image,
+    volumes={MODEL_DIR: model_volume},
+    timeout=60,
+)
+def check_volume_status():
+    """Check what's in the Modal volume."""
+    print("=" * 60)
+    print("Modal Volume Status Check")
+    print("=" * 60)
+    
+    model_path = Path(MODEL_DIR) / "lingbot-world-base-cam"
+    
+    print(f"\nVolume mount: {MODEL_DIR}")
+    print(f"Model path: {model_path}")
+    print(f"Model path exists: {model_path.exists()}")
+    
+    if not Path(MODEL_DIR).exists():
+        print("\n❌ Volume mount does not exist!")
+        return
+    
+    # List all files
+    all_files = list(Path(MODEL_DIR).rglob("*"))
+    files_only = [f for f in all_files if f.is_file()]
+    
+    print(f"\nTotal items: {len(all_files)}")
+    print(f"Total files: {len(files_only)}")
+    
+    if files_only:
+        total_size = sum(f.stat().st_size for f in files_only)
+        print(f"Total size: {total_size / (1024**3):.2f} GB")
+        
+        # Show largest files
+        print("\nLargest files:")
+        for f in sorted(files_only, key=lambda x: x.stat().st_size, reverse=True)[:15]:
+            size_mb = f.stat().st_size / (1024 * 1024)
+            print(f"  {size_mb:>10.1f} MB  {f.relative_to(MODEL_DIR)}")
+        
+        # Check for safetensors
+        safetensors = [f for f in files_only if f.suffix == ".safetensors"]
+        print(f"\nSafetensor files: {len(safetensors)}")
+        if safetensors:
+            st_size = sum(f.stat().st_size for f in safetensors)
+            print(f"Safetensor total size: {st_size / (1024**3):.2f} GB")
+    else:
+        print("\n❌ No files found in volume!")
+    
+    print("=" * 60)
+
+
 # CLI command to download weights
 @app.local_entrypoint()
-def download_weights():
-    """Download model weights to Modal volume."""
-    download_model_weights.remote()
-    print("✓ Model weights downloaded and cached on Modal")
+def download_weights(force: bool = False, check_only: bool = False):
+    """Download model weights to Modal volume.
+    
+    Args:
+        force: Force re-download even if files exist
+        check_only: Only check volume status, don't download
+    """
+    if check_only:
+        print("Checking volume status...")
+        check_volume_status.remote()
+    else:
+        print("Starting model download...")
+        result = download_model_weights.remote(force=force)
+        print(f"\n✓ Complete! Model at: {result}")
