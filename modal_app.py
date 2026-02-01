@@ -422,25 +422,49 @@ class LingBotWorldModel:
 # FastAPI web endpoint
 @app.function(
     image=image,
-    allow_concurrent_inputs=100,
+    min_containers=1,  # Keep one instance warm to avoid cold starts
+    scaledown_window=600,  # Keep container alive for 10 minutes
 )
 @modal.asgi_app()
 def fastapi_app():
     """FastAPI app for HTTP/WebSocket endpoints."""
     import uuid
     import asyncio
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import StreamingResponse, JSONResponse
     from pydantic import BaseModel, Field
+    from starlette.middleware.base import BaseHTTPMiddleware
     
     web_app = FastAPI(title="LingBot-World API")
     
-    # CORS for frontend
+    # Custom CORS middleware to ensure headers are always present
+    @web_app.middleware("http")
+    async def add_cors_headers(request: Request, call_next):
+        # Handle preflight OPTIONS requests
+        if request.method == "OPTIONS":
+            return JSONResponse(
+                content={},
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Max-Age": "86400",
+                }
+            )
+        
+        # Process request and add CORS headers to response
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+    
+    # Also add standard CORS middleware
     web_app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        allow_credentials=False,  # Set to False when using "*" origins
         allow_methods=["*"],
         allow_headers=["*"],
     )
