@@ -3,10 +3,8 @@ import PromptScreen from './components/PromptScreen'
 import LoadingScreen from './components/LoadingScreen'
 import WorldView from './components/WorldView'
 
-// API base URL - use Modal backend in production
-const API_URL = import.meta.env.PROD 
-  ? 'https://revelium-studio--lingbot-world-fastapi-app.modal.run'
-  : ''
+// API base URL - use environment variable or fallback
+const API_URL = import.meta.env.VITE_API_URL || ''
 
 // Application states
 const STATES = {
